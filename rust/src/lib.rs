@@ -17,6 +17,7 @@ mod health;
 mod networks;
 mod state;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -58,7 +59,9 @@ pub fn default_block_stall_secs() -> f64 {
 pub struct TelemetryClient {
     feed_url: String,
     genesis: String,
-    block_stall_secs: f64,
+    /// Shared with the running telemetry thread as f64 bits so the user can
+    /// change the threshold without a reconnect.
+    block_stall_secs: Arc<AtomicU64>,
     handle: Mutex<Option<client::ClientHandle>>,
 }
 
@@ -71,7 +74,19 @@ impl TelemetryClient {
     /// `default_block_stall_secs()` unless the user has set their own.
     #[uniffi::constructor]
     pub fn new(feed_url: String, genesis: String, block_stall_secs: f64) -> Arc<Self> {
-        Arc::new(Self { feed_url, genesis, block_stall_secs, handle: Mutex::new(None) })
+        Arc::new(Self {
+            feed_url,
+            genesis,
+            block_stall_secs: Arc::new(AtomicU64::new(block_stall_secs.to_bits())),
+            handle: Mutex::new(None),
+        })
+    }
+
+    /// Changes the stall threshold on a running client, taking effect on the
+    /// next evaluation. Cheap and non-blocking — unlike stop()/start(), which
+    /// joins the telemetry thread and so must not be used for this.
+    pub fn set_block_stall_secs(&self, secs: f64) {
+        self.block_stall_secs.store(secs.to_bits(), Ordering::Relaxed);
     }
 
     /// Starts (or is a no-op if already running) the background telemetry
@@ -84,7 +99,7 @@ impl TelemetryClient {
         *guard = Some(client::ClientHandle::start(
             self.feed_url.clone(),
             self.genesis.clone(),
-            self.block_stall_secs,
+            self.block_stall_secs.clone(),
             delegate,
         ));
     }

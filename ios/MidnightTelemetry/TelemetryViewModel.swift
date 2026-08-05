@@ -38,7 +38,11 @@ final class TelemetryViewModel: ObservableObject {
         didSet {
             guard blockStallSecs != oldValue else { return }
             UserDefaults.standard.set(blockStallSecs, forKey: Self.blockStallSecsDefaultsKey)
-            restartAll()
+            // Applied live to each running connection. Reconnecting instead
+            // would join every telemetry thread on the main thread, freezing
+            // the UI for about a second per network on every step of the
+            // stepper.
+            clients.values.forEach { $0.setBlockStallSecs(secs: blockStallSecs) }
         }
     }
 
@@ -80,10 +84,19 @@ final class TelemetryViewModel: ObservableObject {
     }
 
     func stop() {
-        clients.values.forEach { $0.stop() }
+        let running = Array(clients.values)
         clients.removeAll()
         bridges.removeAll()
         monitors.removeAll()
+        shutDown(running)
+    }
+
+    /// `TelemetryClient.stop()` joins the telemetry thread, which only notices
+    /// the stop flag on its next tick, so it can block for about a second per
+    /// connection. Never do that on the main thread.
+    private func shutDown(_ clients: [TelemetryClient]) {
+        guard !clients.isEmpty else { return }
+        Task.detached { clients.forEach { $0.stop() } }
     }
 
     // MARK: - Connections
@@ -101,29 +114,19 @@ final class TelemetryViewModel: ObservableObject {
     }
 
     private func unsubscribe(genesis: String) {
-        clients[genesis]?.stop()
-        clients[genesis] = nil
+        let client = clients.removeValue(forKey: genesis)
         bridges[genesis] = nil
         monitors.removeAll { $0.genesis == genesis }
         // Alerts belong to the chain that raised them; keeping them after that
         // chain is dropped would attribute them to nothing.
         recentAlerts.removeAll { $0.genesis == genesis }
+        shutDown(client.map { [$0] } ?? [])
     }
 
     private func subscribeToKnownChains() {
         guard monitorAllNetworks else { return }
         for chain in knownChains where clients[chain.genesis] == nil {
             subscribe(genesis: chain.genesis, label: chain.label)
-        }
-    }
-
-    private func restartAll() {
-        let existing = monitors.map { ($0.genesis, $0.label) }
-        guard !existing.isEmpty else { return }
-        stop()
-        recentAlerts = []
-        for (genesis, label) in existing {
-            subscribe(genesis: genesis, label: label)
         }
     }
 

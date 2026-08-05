@@ -70,25 +70,28 @@ struct SentAlert {
 }
 
 pub struct NotifyEngine {
-    block_stall_secs: f64,
     sent: HashMap<String, SentAlert>,
 }
 
 impl NotifyEngine {
-    pub fn new(block_stall_secs: f64) -> Self {
-        Self { block_stall_secs, sent: HashMap::new() }
+    pub fn new() -> Self {
+        Self { sent: HashMap::new() }
     }
 
     /// Evaluate current conditions against what was already sent, returning
     /// exactly the alerts (new, escalated, renotified, or resolved) worth
     /// telling the user about right now.
+    ///
+    /// `block_stall_secs` is passed per call rather than held, so changing the
+    /// threshold takes effect on the next tick without reconnecting.
     pub fn evaluate(
         &mut self,
         seconds_since_last_block: f64,
         peer_drops: &[PeerDrop],
+        block_stall_secs: f64,
         now: Instant,
     ) -> Vec<AlertEvent> {
-        let active = build_active_alerts(seconds_since_last_block, peer_drops, self.block_stall_secs);
+        let active = build_active_alerts(seconds_since_last_block, peer_drops, block_stall_secs);
         let mut out = Vec::new();
         let mut next: HashMap<String, SentAlert> = HashMap::new();
 
@@ -137,34 +140,34 @@ mod tests {
 
     #[test]
     fn fires_once_then_stays_quiet_while_stable() {
-        let mut engine = NotifyEngine::new(15.0);
+        let mut engine = NotifyEngine::new();
         let t0 = Instant::now();
-        let first = engine.evaluate(16.0, &[], t0);
+        let first = engine.evaluate(16.0, &[], 15.0, t0);
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].severity, Severity::Critical);
         assert!(!first[0].resolved);
 
-        let second = engine.evaluate(16.5, &[], t0);
+        let second = engine.evaluate(16.5, &[], 15.0, t0);
         assert!(second.is_empty(), "should not re-notify an unchanged stall");
     }
 
     #[test]
     fn fires_then_resolves() {
-        let mut engine = NotifyEngine::new(15.0);
+        let mut engine = NotifyEngine::new();
         let t0 = Instant::now();
-        engine.evaluate(16.0, &[], t0);
+        engine.evaluate(16.0, &[], 15.0, t0);
 
-        let resolved = engine.evaluate(1.0, &[], t0);
+        let resolved = engine.evaluate(1.0, &[], 15.0, t0);
         assert_eq!(resolved.len(), 1);
         assert!(resolved[0].resolved);
     }
 
     #[test]
     fn peer_drop_to_zero_is_critical() {
-        let mut engine = NotifyEngine::new(15.0);
+        let mut engine = NotifyEngine::new();
         let t0 = Instant::now();
         let drops = vec![(1u64, "my-validator".to_string(), 8u32, 0u32)];
-        let alerts = engine.evaluate(0.0, &drops, t0);
+        let alerts = engine.evaluate(0.0, &drops, 15.0, t0);
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].severity, Severity::Critical);
         assert!(alerts[0].id.starts_with("peer-drop-"));

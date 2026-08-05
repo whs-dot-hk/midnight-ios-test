@@ -5,8 +5,8 @@ struct ContentView: View {
 
     var body: some View {
         TabView {
-            NetworksView(viewModel: viewModel)
-                .tabItem { Label("Networks", systemImage: "server.rack") }
+            ValidatorsView(viewModel: viewModel)
+                .tabItem { Label("Validators", systemImage: "checkmark.seal") }
 
             SettingsView(viewModel: viewModel)
                 .tabItem { Label("Settings", systemImage: "gear") }
@@ -15,7 +15,7 @@ struct ContentView: View {
     }
 }
 
-struct NetworksView: View {
+struct ValidatorsView: View {
     @ObservedObject var viewModel: TelemetryViewModel
 
     var body: some View {
@@ -23,70 +23,160 @@ struct NetworksView: View {
             List {
                 ForEach(viewModel.monitors) { monitor in
                     Section {
-                        HStack {
-                            Circle()
-                                .fill(color(for: monitor.status))
-                                .frame(width: 10, height: 10)
-                            Text(label(for: monitor.status))
-                                .font(.subheadline)
-                        }
-                        if let summary = monitor.snapshot.summary {
-                            LabeledContent("Best block", value: "#\(summary.bestBlock)")
-                            LabeledContent("Finalized", value: "#\(summary.finalizedBlock)")
-                            LabeledContent(
-                                "Last block",
-                                value: String(format: "%.0fs ago", summary.secondsSinceLastBlock))
-                        }
+                        ChainStats(monitor: monitor)
                         ForEach(monitor.snapshot.nodes, id: \.id) { node in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(node.name.isEmpty ? "unnamed" : node.name)
-                                Text("\(node.peers) peers · block #\(node.bestBlock)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            ValidatorRow(node: node, chainTip: monitor.snapshot.summary?.bestBlock)
                         }
                     } header: {
-                        Text("\(monitor.label ?? "Midnight") · \(monitor.snapshot.nodes.count) validators")
+                        NetworkHeader(monitor: monitor)
                     }
                 }
 
                 if !viewModel.recentAlerts.isEmpty {
                     Section("Recent alerts") {
                         ForEach(viewModel.recentAlerts) { alert in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(title(for: alert))
-                                Text(alert.event.body)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            AlertRow(alert: alert)
                         }
                     }
                 }
             }
-            .navigationTitle("Midnight Telemetry")
+            .listStyle(.insetGrouped)
+            .navigationTitle("Validators")
         }
     }
+}
 
-    /// The history spans every monitored chain, so each entry names its own.
-    private func title(for alert: DisplayAlert) -> String {
-        guard let network = alert.networkLabel else { return alert.event.title }
-        return "\(network): \(alert.event.title)"
-    }
+/// Network name with its connection state, and how many validators it reports.
+private struct NetworkHeader: View {
+    let monitor: NetworkMonitor
 
-    private func label(for status: ConnectionStatus) -> String {
-        switch status {
-        case .connecting: return "Connecting…"
-        case .live: return "Live"
-        case .reconnecting: return "Reconnecting…"
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+            Text(monitor.label ?? "Midnight")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            Spacer()
+            Text(validatorCount)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
+        // Section headers are upper-cased by default, which mangles the feed's
+        // own chain names.
+        .textCase(nil)
     }
 
-    private func color(for status: ConnectionStatus) -> Color {
-        switch status {
+    private var validatorCount: String {
+        let count = monitor.snapshot.nodes.count
+        return count == 1 ? "1 validator" : "\(count) validators"
+    }
+
+    private var statusColor: Color {
+        switch monitor.status {
         case .connecting: return .yellow
         case .live: return .green
         case .reconnecting: return .orange
         }
+    }
+}
+
+/// Chain-level figures, side by side rather than as three separate rows.
+private struct ChainStats: View {
+    let monitor: NetworkMonitor
+
+    var body: some View {
+        HStack(spacing: 0) {
+            metric("Best", summary.map { "#\($0.bestBlock)" })
+            divider
+            metric("Finalized", summary.map { "#\($0.finalizedBlock)" })
+            divider
+            metric("Last block", summary.map { String(format: "%.0fs ago", $0.secondsSinceLastBlock) })
+        }
+    }
+
+    private var summary: NetworkSummary? { monitor.snapshot.summary }
+
+    private var divider: some View {
+        Divider().frame(height: 26)
+    }
+
+    private func metric(_ title: String, _ value: String?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            // Monospaced digits so live-updating numbers don't shift width.
+            Text(value ?? "—")
+                .font(.footnote.monospacedDigit())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ValidatorRow: View {
+    let node: NodeInfo
+    let chainTip: UInt64?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(node.name.isEmpty ? "unnamed" : node.name)
+                    .font(.callout)
+                Text(node.peers == 1 ? "1 peer" : "\(node.peers) peers")
+                    .font(.caption)
+                    .foregroundStyle(node.peers == 0 ? .red : .secondary)
+            }
+            Spacer(minLength: 0)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("#\(node.bestBlock)")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(blocksBehind == nil ? .primary : .orange)
+                if let behind = blocksBehind {
+                    Text("\(behind) behind")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    /// A validator trailing the chain tip is the signal worth surfacing. A block
+    /// or two is ordinary propagation delay, so only a real gap is flagged.
+    private var blocksBehind: Int64? {
+        guard let tip = chainTip, tip > 0 else { return nil }
+        let lag = Int64(tip) - Int64(node.bestBlock)
+        return lag > 2 ? lag : nil
+    }
+}
+
+private struct AlertRow: View {
+    let alert: DisplayAlert
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                // The history spans every monitored chain, so each entry names its own.
+                Text(alert.networkLabel.map { "\($0): \(alert.event.title)" } ?? alert.event.title)
+                    .font(.callout)
+                Text(alert.event.body)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var icon: String {
+        alert.event.resolved ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private var tint: Color {
+        if alert.event.resolved { return .green }
+        return alert.event.severity == .critical ? .red : .orange
     }
 }
 
