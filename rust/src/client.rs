@@ -14,11 +14,6 @@ use crate::health::NotifyEngine;
 use crate::state::TelemetryState;
 use crate::{ConnectionStatus, TelemetryDelegate};
 
-pub struct ClientHandle {
-    stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
 /// rustls 0.23 requires a process-wide CryptoProvider to be installed before
 /// any TLS connection; nothing does this implicitly for tokio-tungstenite's
 /// rustls-tls-webpki-roots feature, so without this every connect attempt
@@ -31,42 +26,32 @@ fn ensure_crypto_provider() {
     });
 }
 
-impl ClientHandle {
-    pub fn start(
-        feed_url: String,
-        genesis: String,
-        block_stall_secs: Arc<AtomicU64>,
-        delegate: Arc<dyn TelemetryDelegate>,
-    ) -> Self {
-        ensure_crypto_provider();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_for_thread = stop.clone();
-        let thread = std::thread::Builder::new()
-            .name("midnight-telemetry".into())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("failed to start telemetry runtime");
-                rt.block_on(run_loop(feed_url, genesis, block_stall_secs, delegate, stop_for_thread));
-            })
-            .expect("failed to spawn telemetry thread");
-
-        Self { stop, thread: Some(thread) }
-    }
-
-    pub fn stop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
-impl Drop for ClientHandle {
-    fn drop(&mut self) {
-        self.stop();
-    }
+/// Spawns the telemetry thread, detached. It owns everything it needs and runs
+/// until `stop` is set, then returns on its own.
+///
+/// Nothing joins it, which is why neither stopping nor dropping a client can
+/// block: a join would have to wait for the thread to notice the flag, which
+/// takes until its next tick — or, if it is between reconnect attempts, until
+/// its backoff sleep ends. Callers must therefore expect a few late delegate
+/// callbacks after stopping.
+pub fn spawn(
+    feed_url: String,
+    genesis: String,
+    block_stall_secs: Arc<AtomicU64>,
+    stop: Arc<AtomicBool>,
+    delegate: Arc<dyn TelemetryDelegate>,
+) {
+    ensure_crypto_provider();
+    std::thread::Builder::new()
+        .name("midnight-telemetry".into())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to start telemetry runtime");
+            rt.block_on(run_loop(feed_url, genesis, block_stall_secs, delegate, stop));
+        })
+        .expect("failed to spawn telemetry thread");
 }
 
 async fn run_loop(

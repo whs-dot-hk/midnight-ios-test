@@ -83,20 +83,14 @@ final class TelemetryViewModel: ObservableObject {
         subscribe(genesis: defaultGenesis(), label: nil)
     }
 
+    /// `TelemetryClient.stop()` only signals its thread, so this returns at
+    /// once; the thread finishes in the background.
     func stop() {
         let running = Array(clients.values)
         clients.removeAll()
         bridges.removeAll()
         monitors.removeAll()
-        shutDown(running)
-    }
-
-    /// `TelemetryClient.stop()` joins the telemetry thread, which only notices
-    /// the stop flag on its next tick, so it can block for about a second per
-    /// connection. Never do that on the main thread.
-    private func shutDown(_ clients: [TelemetryClient]) {
-        guard !clients.isEmpty else { return }
-        Task.detached { clients.forEach { $0.stop() } }
+        running.forEach { $0.stop() }
     }
 
     // MARK: - Connections
@@ -120,7 +114,7 @@ final class TelemetryViewModel: ObservableObject {
         // Alerts belong to the chain that raised them; keeping them after that
         // chain is dropped would attribute them to nothing.
         recentAlerts.removeAll { $0.genesis == genesis }
-        shutDown(client.map { [$0] } ?? [])
+        client?.stop()
     }
 
     private func subscribeToKnownChains() {
@@ -143,7 +137,16 @@ final class TelemetryViewModel: ObservableObject {
 
     // MARK: - Delegate callbacks
 
+    /// A stopped thread is not joined, so callbacks can still arrive for a
+    /// subscription already dropped. `clients` is the record of what is still
+    /// wanted, and anything else is discarded — otherwise a late alert would
+    /// notify about a network no longer being monitored.
+    private func isActive(_ genesis: String) -> Bool {
+        clients[genesis] != nil
+    }
+
     fileprivate func handleSnapshot(_ snapshot: Snapshot, genesis: String) {
+        guard isActive(genesis) else { return }
         if !snapshot.chains.isEmpty {
             knownChains = snapshot.chains
             for i in monitors.indices where monitors[i].label == nil {
@@ -159,6 +162,7 @@ final class TelemetryViewModel: ObservableObject {
     }
 
     fileprivate func handleAlert(_ alert: AlertEvent, genesis: String) {
+        guard isActive(genesis) else { return }
         let label = monitors.first { $0.genesis == genesis }?.label
         recentAlerts.insert(
             DisplayAlert(event: alert, genesis: genesis, networkLabel: label), at: 0)
@@ -167,6 +171,7 @@ final class TelemetryViewModel: ObservableObject {
     }
 
     fileprivate func handleStatusChanged(_ status: ConnectionStatus, genesis: String) {
+        guard isActive(genesis) else { return }
         if let i = monitors.firstIndex(where: { $0.genesis == genesis }) {
             monitors[i].status = status
         }

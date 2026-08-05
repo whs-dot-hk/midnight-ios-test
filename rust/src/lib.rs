@@ -17,9 +17,8 @@ mod health;
 mod networks;
 mod state;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
 
 pub use health::{AlertEvent, Severity};
 pub use state::{ChainOption, NetworkSummary, NodeInfo, Snapshot};
@@ -62,7 +61,10 @@ pub struct TelemetryClient {
     /// Shared with the running telemetry thread as f64 bits so the user can
     /// change the threshold without a reconnect.
     block_stall_secs: Arc<AtomicU64>,
-    handle: Mutex<Option<client::ClientHandle>>,
+    /// Set to stop the thread. Shared rather than owned, so no handle to the
+    /// thread needs keeping — and therefore no lock to guard it.
+    stop: Arc<AtomicBool>,
+    started: AtomicBool,
 }
 
 #[uniffi::export]
@@ -78,36 +80,50 @@ impl TelemetryClient {
             feed_url,
             genesis,
             block_stall_secs: Arc::new(AtomicU64::new(block_stall_secs.to_bits())),
-            handle: Mutex::new(None),
+            stop: Arc::new(AtomicBool::new(false)),
+            started: AtomicBool::new(false),
         })
     }
 
     /// Changes the stall threshold on a running client, taking effect on the
-    /// next evaluation. Cheap and non-blocking — unlike stop()/start(), which
-    /// joins the telemetry thread and so must not be used for this.
+    /// next evaluation, without disturbing the connection.
     pub fn set_block_stall_secs(&self, secs: f64) {
         self.block_stall_secs.store(secs.to_bits(), Ordering::Relaxed);
     }
 
-    /// Starts (or is a no-op if already running) the background telemetry
-    /// thread. `delegate` receives snapshots and alerts until `stop()` is called.
+    /// Starts the background telemetry thread; `delegate` receives snapshots
+    /// and alerts until `stop()` is called. A second call is a no-op, which
+    /// matters because starting twice would open two subscriptions delivering
+    /// duplicate callbacks.
+    ///
+    /// A client is single-use: once stopped it stays stopped, since the app
+    /// constructs a new one per subscription.
     pub fn start(&self, delegate: Arc<dyn TelemetryDelegate>) {
-        let mut guard = self.handle.lock().expect("telemetry handle lock poisoned");
-        if guard.is_some() {
+        if self.started.swap(true, Ordering::SeqCst) {
             return;
         }
-        *guard = Some(client::ClientHandle::start(
+        client::spawn(
             self.feed_url.clone(),
             self.genesis.clone(),
             self.block_stall_secs.clone(),
+            self.stop.clone(),
             delegate,
-        ));
+        );
     }
 
+    /// Signals the telemetry thread to finish and returns immediately, so this
+    /// is safe to call from the UI thread. The thread exits on its next tick,
+    /// which means a few delegate callbacks may still arrive afterwards —
+    /// callers should ignore callbacks for a subscription they have dropped.
     pub fn stop(&self) {
-        let mut guard = self.handle.lock().expect("telemetry handle lock poisoned");
-        if let Some(mut h) = guard.take() {
-            h.stop();
-        }
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Releasing a client stops its thread; nothing else holds it, so this keeps a
+/// forgotten client from leaving a connection running for the process lifetime.
+impl Drop for TelemetryClient {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
