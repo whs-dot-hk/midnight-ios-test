@@ -36,17 +36,10 @@ struct NodesView: View {
                     }
                 }
 
-                Section("Nodes (\(viewModel.snapshot.nodes.count))") {
+                Section("Validators (\(viewModel.snapshot.nodes.count))") {
                     ForEach(viewModel.snapshot.nodes, id: \.id) { node in
                         VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(node.name.isEmpty ? "unnamed" : node.name)
-                                    .font(.body.weight(node.isValidator ? .semibold : .regular))
-                                Spacer()
-                                Text(node.kindLabel)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            Text(node.name.isEmpty ? "unnamed" : node.name)
                             Text("\(node.peers) peers · block #\(node.bestBlock)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -95,22 +88,29 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 Section {
-                    if viewModel.snapshot.chains.isEmpty {
-                        // The list is announced by the feed on connect, so it is
-                        // briefly unavailable before the first message arrives.
-                        LabeledContent("Network", value: "Waiting for feed…")
-                    } else {
-                        Picker("Network", selection: $viewModel.genesis) {
-                            ForEach(viewModel.snapshot.chains, id: \.genesis) { chain in
-                                Text("\(chain.label) (\(chain.nodeCount))")
-                                    .tag(chain.genesis)
+                    Toggle("Include test networks", isOn: $viewModel.includeTestNetworks)
+
+                    if viewModel.includeTestNetworks {
+                        if viewModel.selectableChains.isEmpty {
+                            // Announced by the feed on connect, so briefly
+                            // unavailable before the first message arrives.
+                            LabeledContent("Network", value: "Waiting for feed…")
+                        } else {
+                            Picker("Network", selection: $viewModel.genesis) {
+                                ForEach(viewModel.selectableChains, id: \.genesis) { chain in
+                                    Text("\(chain.label) (\(chain.nodeCount))")
+                                        .tag(chain.genesis)
+                                }
                             }
+                            .pickerStyle(.menu)
                         }
                     }
                 } header: {
                     Text("Network")
                 } footer: {
-                    Text("Chains and node counts are reported by the telemetry feed.")
+                    Text(viewModel.includeTestNetworks
+                         ? "Chains and node counts are reported by the telemetry feed."
+                         : "Only mainnet is monitored. Turn this on to select preprod or preview.")
                 }
 
                 Section {

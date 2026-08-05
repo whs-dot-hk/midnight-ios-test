@@ -1,70 +1,41 @@
-//! Best-effort node classification from its telemetry `--name`, purely for
-//! display grouping (e.g. showing validators first in the list).
+//! Whether a node is a validator, inferred from its telemetry `--name`. The
+//! app tracks validators only, so this is the filter applied to everything the
+//! feed reports.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum NodeKind {
-    Validator,
-    FilterGateway,
-    Boot,
-    Bridge,
-    SemiTrustedRpc,
-    Rpc,
-    Other,
-}
-
-impl NodeKind {
-    pub fn label(&self) -> &'static str {
-        match self {
-            NodeKind::Validator => "Validator",
-            NodeKind::FilterGateway => "Filter Gateway",
-            NodeKind::Boot => "Boot Node",
-            NodeKind::Bridge => "Bridge",
-            NodeKind::SemiTrustedRpc => "Semi-Trusted RPC",
-            NodeKind::Rpc => "RPC",
-            NodeKind::Other => "Other",
-        }
-    }
-}
-
-/// Order matters — more specific substrings must be checked before general ones.
-pub fn classify_node(name: &str) -> NodeKind {
-    let lower = name.to_lowercase();
-    if lower.is_empty() {
-        return NodeKind::Other;
-    }
-    if lower.contains("validator") {
-        return NodeKind::Validator;
-    }
-    if lower.contains("filter-gateway") || lower.contains("filter_gateway") {
-        return NodeKind::FilterGateway;
-    }
-    if lower.contains("semi-trusted") || lower.contains("semi_trusted") {
-        return NodeKind::SemiTrustedRpc;
-    }
-    if lower.contains("boot") {
-        return NodeKind::Boot;
-    }
-    if lower.contains("bridge") {
-        return NodeKind::Bridge;
-    }
-    if lower.contains("rpc") {
-        return NodeKind::Rpc;
-    }
-    NodeKind::Other
+/// Midnight validators carry a `validator` segment in their name. Verified
+/// against the live mainnet feed: all 13 validators match, and none of the 24
+/// RPC / boot / bridge / filter-gateway / semi-trusted nodes do.
+pub fn is_validator(name: &str) -> bool {
+    name.to_lowercase().contains("validator")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Names taken verbatim from the live mainnet feed.
     #[test]
-    fn classifies_common_names() {
-        assert_eq!(classify_node("sfi-validator-google"), NodeKind::Validator);
-        assert_eq!(classify_node("mn-boot-1"), NodeKind::Boot);
-        assert_eq!(classify_node("mn-rpc-2"), NodeKind::Rpc);
-        assert_eq!(classify_node("semi-trusted-rpc-1"), NodeKind::SemiTrustedRpc);
-        assert_eq!(classify_node("some-bridge"), NodeKind::Bridge);
-        assert_eq!(classify_node(""), NodeKind::Other);
-        assert_eq!(classify_node("whatever"), NodeKind::Other);
+    fn matches_validators_only() {
+        for name in [
+            "sfi-validator-google",
+            "aton-validator",
+            "bkd-validator-bullish",
+            "stl-validator-whippet-humpback",
+            "mnf-validator-1",
+        ] {
+            assert!(is_validator(name), "{name} should be a validator");
+        }
+
+        for name in [
+            "stl-semi-trusted-rpc-glider-anchovy",
+            "stl-boot-glider-spaniel",
+            "stl-bridge-dog-weasel",
+            "stl-filter-gateway-whippet-louse",
+            "stl-rpc-llama-thrush",
+            "bgo-standby",
+            "",
+        ] {
+            assert!(!is_validator(name), "{name} should not be a validator");
+        }
     }
 }

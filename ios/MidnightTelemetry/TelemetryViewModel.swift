@@ -14,6 +14,7 @@ struct DisplayAlert: Identifiable {
 final class TelemetryViewModel: ObservableObject {
     private static let blockStallSecsDefaultsKey = "blockStallSecs"
     private static let genesisDefaultsKey = "genesis"
+    private static let includeTestNetworksDefaultsKey = "includeTestNetworks"
 
     @Published private(set) var status: ConnectionStatus = .connecting
     @Published private(set) var snapshot: Snapshot = Snapshot(nodes: [], summary: nil, chains: [])
@@ -35,6 +36,18 @@ final class TelemetryViewModel: ObservableObject {
         }
     }
 
+    /// Off by default, so only mainnet is offered and monitored. Turning it off
+    /// while a test network is selected returns the subscription to mainnet.
+    @Published var includeTestNetworks: Bool = UserDefaults.standard.bool(forKey: includeTestNetworksDefaultsKey) {
+        didSet {
+            guard includeTestNetworks != oldValue else { return }
+            UserDefaults.standard.set(includeTestNetworks, forKey: Self.includeTestNetworksDefaultsKey)
+            if !includeTestNetworks {
+                genesis = defaultGenesis()
+            }
+        }
+    }
+
     private var client: TelemetryClient?
     private var delegateBridge: DelegateBridge?
     private let notifications = NotificationManager()
@@ -44,13 +57,27 @@ final class TelemetryViewModel: ObservableObject {
         snapshot.chains.first { $0.genesis == genesis }?.label
     }
 
+    /// Mainnet is identified by genesis hash rather than by its label, so a
+    /// change to the feed's naming cannot silently expose test networks.
+    var selectableChains: [ChainOption] {
+        guard includeTestNetworks else {
+            return snapshot.chains.filter { $0.genesis == defaultGenesis() }
+        }
+        return snapshot.chains
+    }
+
     private static func storedBlockStallSecs() -> Double {
         let stored = UserDefaults.standard.double(forKey: blockStallSecsDefaultsKey)
         return stored > 0 ? stored : defaultBlockStallSecs()
     }
 
+    /// A previously selected test network must not survive into a session with
+    /// test networks turned off, so the toggle decides before the stored value.
     private static func storedGenesis() -> String {
-        UserDefaults.standard.string(forKey: genesisDefaultsKey) ?? defaultGenesis()
+        guard UserDefaults.standard.bool(forKey: includeTestNetworksDefaultsKey) else {
+            return defaultGenesis()
+        }
+        return UserDefaults.standard.string(forKey: genesisDefaultsKey) ?? defaultGenesis()
     }
 
     func start() {

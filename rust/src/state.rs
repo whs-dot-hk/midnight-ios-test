@@ -1,19 +1,21 @@
 //! In-memory telemetry state: applies parsed feed events, and tracks just
 //! enough history (per-node peer samples, time of last new block) to drive
 //! the two alert conditions this app cares about.
+//!
+//! Only validators are retained — the feed also carries RPC, boot, bridge and
+//! gateway nodes, which the app neither displays nor alerts on. Chain-level
+//! figures (best/finalized block) still come from every node's reports.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use crate::classify::{classify_node, NodeKind};
+use crate::classify::is_validator;
 use crate::feed::TelemetryEvent;
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct NodeInfo {
     pub id: u64,
     pub name: String,
-    pub kind_label: String,
-    pub is_validator: bool,
     pub peers: u32,
     pub best_block: u64,
 }
@@ -79,7 +81,6 @@ impl PeerHistory {
 
 struct NodeEntry {
     name: String,
-    kind: NodeKind,
     peers: u32,
     best_block: u64,
     peer_history: PeerHistory,
@@ -112,14 +113,18 @@ impl TelemetryState {
     pub fn apply(&mut self, event: TelemetryEvent, now: Instant) {
         match event {
             TelemetryEvent::AddedNode { id, name, peers, best_block } => {
-                let kind = classify_node(&name);
-                let mut entry =
-                    NodeEntry { name, kind, peers, best_block, peer_history: PeerHistory::new() };
-                entry.peer_history.push(now, peers);
+                // Chain height is taken from every node's report, including the
+                // non-validators dropped immediately below.
                 if best_block > self.best_block {
                     self.best_block = best_block;
                     self.last_block_seen_at = now;
                 }
+                if !is_validator(&name) {
+                    return;
+                }
+                let mut entry =
+                    NodeEntry { name, peers, best_block, peer_history: PeerHistory::new() };
+                entry.peer_history.push(now, peers);
                 self.nodes.insert(id, entry);
             }
             TelemetryEvent::RemovedNode { id } => {
@@ -171,21 +176,14 @@ impl TelemetryState {
             .map(|(&id, n)| NodeInfo {
                 id,
                 name: n.name.clone(),
-                kind_label: n.kind.label().to_string(),
-                is_validator: n.kind == NodeKind::Validator,
                 peers: n.peers,
                 best_block: n.best_block,
             })
             .collect();
 
-        // Validators first, then worst-peers-first within each group, so
-        // problem nodes surface at the top of a "minimal" single-screen list.
-        nodes.sort_by(|a, b| {
-            b.is_validator
-                .cmp(&a.is_validator)
-                .then(a.peers.cmp(&b.peers))
-                .then(a.name.cmp(&b.name))
-        });
+        // Worst-peers-first, so problem nodes surface at the top of a
+        // "minimal" single-screen list.
+        nodes.sort_by(|a, b| a.peers.cmp(&b.peers).then(a.name.cmp(&b.name)));
 
         // Sorted by label so the picker keeps a stable order rather than
         // reshuffling as node counts move.
