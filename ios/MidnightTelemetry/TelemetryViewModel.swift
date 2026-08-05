@@ -1,10 +1,20 @@
 import Foundation
 
+/// `AlertEvent.id` is a stable condition key (e.g. "block-stall"), reused
+/// across an alert's fire/escalate/resolve lifecycle so NotificationManager
+/// can replace the right system notification. That makes it unsuitable as a
+/// SwiftUI list identity for `recentAlerts`, which keeps history: the same
+/// condition can appear more than once. Wrap each occurrence with its own id.
+struct DisplayAlert: Identifiable {
+    let id = UUID()
+    let event: AlertEvent
+}
+
 @MainActor
 final class TelemetryViewModel: ObservableObject {
     @Published private(set) var status: ConnectionStatus = .connecting
     @Published private(set) var snapshot: Snapshot = Snapshot(nodes: [], summary: nil)
-    @Published private(set) var recentAlerts: [AlertEvent] = []
+    @Published private(set) var recentAlerts: [DisplayAlert] = []
 
     private var client: TelemetryClient?
     private var delegateBridge: DelegateBridge?
@@ -30,7 +40,7 @@ final class TelemetryViewModel: ObservableObject {
     }
 
     fileprivate func handleAlert(_ alert: AlertEvent) {
-        recentAlerts.insert(alert, at: 0)
+        recentAlerts.insert(DisplayAlert(event: alert), at: 0)
         recentAlerts = Array(recentAlerts.prefix(20))
         notifications.post(alert: alert)
     }

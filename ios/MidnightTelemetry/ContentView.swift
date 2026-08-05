@@ -41,10 +41,10 @@ struct ContentView: View {
 
                 if !viewModel.recentAlerts.isEmpty {
                     Section("Recent alerts") {
-                        ForEach(viewModel.recentAlerts, id: \.id) { alert in
+                        ForEach(viewModel.recentAlerts) { alert in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(alert.title)
-                                Text(alert.body)
+                                Text(alert.event.title)
+                                Text(alert.event.body)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
