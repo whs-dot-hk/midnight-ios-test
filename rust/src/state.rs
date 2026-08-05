@@ -18,6 +18,15 @@ pub struct NodeInfo {
     pub best_block: u64,
 }
 
+/// A chain the feed carries, as announced by it — the source of the network
+/// picker, so no genesis hash has to be hardcoded and go stale.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ChainOption {
+    pub genesis: String,
+    pub label: String,
+    pub node_count: u32,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct NetworkSummary {
     pub best_block: u64,
@@ -30,6 +39,7 @@ pub struct NetworkSummary {
 pub struct Snapshot {
     pub nodes: Vec<NodeInfo>,
     pub summary: Option<NetworkSummary>,
+    pub chains: Vec<ChainOption>,
 }
 
 const PEER_HISTORY_WINDOW_SECS: u64 = 90;
@@ -80,6 +90,7 @@ pub type PeerDrop = (u64, String, u32, u32);
 
 pub struct TelemetryState {
     nodes: HashMap<u64, NodeEntry>,
+    chains: HashMap<String, ChainOption>,
     best_block: u64,
     finalized_block: u64,
     avg_block_time_ms: Option<u64>,
@@ -90,6 +101,7 @@ impl TelemetryState {
     pub fn new(now: Instant) -> Self {
         Self {
             nodes: HashMap::new(),
+            chains: HashMap::new(),
             best_block: 0,
             finalized_block: 0,
             avg_block_time_ms: None,
@@ -145,6 +157,10 @@ impl TelemetryState {
                     self.finalized_block = block_number;
                 }
             }
+            TelemetryEvent::AddedChain { label, genesis, node_count } => {
+                self.chains
+                    .insert(genesis.clone(), ChainOption { genesis, label, node_count });
+            }
         }
     }
 
@@ -171,6 +187,11 @@ impl TelemetryState {
                 .then(a.name.cmp(&b.name))
         });
 
+        // Sorted by label so the picker keeps a stable order rather than
+        // reshuffling as node counts move.
+        let mut chains: Vec<ChainOption> = self.chains.values().cloned().collect();
+        chains.sort_by(|a, b| a.label.cmp(&b.label));
+
         let summary = if self.best_block > 0 {
             Some(NetworkSummary {
                 best_block: self.best_block,
@@ -182,7 +203,7 @@ impl TelemetryState {
             None
         };
 
-        Snapshot { nodes, summary }
+        Snapshot { nodes, summary, chains }
     }
 
     pub fn seconds_since_last_block(&self, now: Instant) -> f64 {

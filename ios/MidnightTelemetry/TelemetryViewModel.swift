@@ -13,9 +13,10 @@ struct DisplayAlert: Identifiable {
 @MainActor
 final class TelemetryViewModel: ObservableObject {
     private static let blockStallSecsDefaultsKey = "blockStallSecs"
+    private static let genesisDefaultsKey = "genesis"
 
     @Published private(set) var status: ConnectionStatus = .connecting
-    @Published private(set) var snapshot: Snapshot = Snapshot(nodes: [], summary: nil)
+    @Published private(set) var snapshot: Snapshot = Snapshot(nodes: [], summary: nil, chains: [])
     @Published private(set) var recentAlerts: [DisplayAlert] = []
     @Published var blockStallSecs: Double = TelemetryViewModel.storedBlockStallSecs() {
         didSet {
@@ -24,21 +25,37 @@ final class TelemetryViewModel: ObservableObject {
             restart()
         }
     }
+    /// Genesis hash of the subscribed chain. The selectable set comes from the
+    /// feed itself via `snapshot.chains`, so nothing here is hardcoded.
+    @Published var genesis: String = TelemetryViewModel.storedGenesis() {
+        didSet {
+            guard genesis != oldValue else { return }
+            UserDefaults.standard.set(genesis, forKey: Self.genesisDefaultsKey)
+            restart()
+        }
+    }
 
     private var client: TelemetryClient?
     private var delegateBridge: DelegateBridge?
-    private var networkId = defaultNetworkId()
     private let notifications = NotificationManager()
+
+    /// Label for the subscribed chain, once the feed has announced it.
+    var currentChainLabel: String? {
+        snapshot.chains.first { $0.genesis == genesis }?.label
+    }
 
     private static func storedBlockStallSecs() -> Double {
         let stored = UserDefaults.standard.double(forKey: blockStallSecsDefaultsKey)
         return stored > 0 ? stored : defaultBlockStallSecs()
     }
 
-    func start(networkId: String = defaultNetworkId()) {
+    private static func storedGenesis() -> String {
+        UserDefaults.standard.string(forKey: genesisDefaultsKey) ?? defaultGenesis()
+    }
+
+    func start() {
         guard client == nil else { return }
-        self.networkId = networkId
-        let client = TelemetryClient(feedUrl: defaultFeedUrl(), networkId: networkId, blockStallSecs: blockStallSecs)
+        let client = TelemetryClient(feedUrl: defaultFeedUrl(), genesis: genesis, blockStallSecs: blockStallSecs)
         let bridge = DelegateBridge(owner: self)
         self.client = client
         self.delegateBridge = bridge
@@ -55,7 +72,12 @@ final class TelemetryViewModel: ObservableObject {
         guard client != nil else { return }
         stop()
         status = .connecting
-        start(networkId: networkId)
+        // Drop the previous chain's nodes and alerts so they aren't shown under
+        // the newly selected network, but keep the feed's chain list — that is
+        // feed-level, not subscription-specific, so the picker never goes empty.
+        snapshot = Snapshot(nodes: [], summary: nil, chains: snapshot.chains)
+        recentAlerts = []
+        start()
     }
 
     fileprivate func handleSnapshot(_ snapshot: Snapshot) {

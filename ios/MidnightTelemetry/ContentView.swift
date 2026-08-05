@@ -67,7 +67,7 @@ struct NodesView: View {
                     }
                 }
             }
-            .navigationTitle("Midnight Telemetry")
+            .navigationTitle(viewModel.currentChainLabel ?? "Midnight Telemetry")
         }
     }
 
@@ -94,6 +94,25 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    if viewModel.snapshot.chains.isEmpty {
+                        // The list is announced by the feed on connect, so it is
+                        // briefly unavailable before the first message arrives.
+                        LabeledContent("Network", value: "Waiting for feed…")
+                    } else {
+                        Picker("Network", selection: $viewModel.genesis) {
+                            ForEach(viewModel.snapshot.chains, id: \.genesis) { chain in
+                                Text("\(chain.label) (\(chain.nodeCount))")
+                                    .tag(chain.genesis)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Network")
+                } footer: {
+                    Text("Chains and node counts are reported by the telemetry feed.")
+                }
+
                 Section {
                     Stepper(value: $viewModel.blockStallSecs, in: 7...120, step: 1) {
                         LabeledContent(
@@ -123,4 +142,8 @@ struct SettingsView: View {
 
 #Preview {
     ContentView(viewModel: TelemetryViewModel())
+}
+
+#Preview("Settings") {
+    SettingsView(viewModel: TelemetryViewModel())
 }

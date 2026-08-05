@@ -16,6 +16,7 @@ mod action {
     pub const IMPORTED_BLOCK: i64 = 6;
     pub const FINALIZED_BLOCK: i64 = 7;
     pub const NODE_STATS: i64 = 8;
+    pub const ADDED_CHAIN: i64 = 11;
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +48,13 @@ pub enum TelemetryEvent {
     BestFinalized {
         block_number: u64,
     },
+    /// The feed announces every chain it carries on connect, regardless of
+    /// which one we subscribe to — this is where the network list comes from.
+    AddedChain {
+        label: String,
+        genesis: String,
+        node_count: u32,
+    },
 }
 
 fn arr(v: &Value) -> Option<&Vec<Value>> {
@@ -54,6 +62,9 @@ fn arr(v: &Value) -> Option<&Vec<Value>> {
 }
 fn u64_at(a: &[Value], i: usize) -> Option<u64> {
     a.get(i).and_then(Value::as_u64)
+}
+fn str_at(a: &[Value], i: usize) -> String {
+    a.get(i).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
 pub fn parse_feed_message(raw: &str) -> Vec<TelemetryEvent> {
@@ -147,6 +158,17 @@ pub fn parse_feed_message(raw: &str) -> Vec<TelemetryEvent> {
                     block_number: u64_at(payload, 0).unwrap_or(0),
                 });
             }
+            action::ADDED_CHAIN => {
+                // payload: [label, genesisHash, nodeCount]
+                let genesis = str_at(payload, 1);
+                if !genesis.is_empty() {
+                    events.push(TelemetryEvent::AddedChain {
+                        label: str_at(payload, 0),
+                        genesis,
+                        node_count: u64_at(payload, 2).unwrap_or(0) as u32,
+                    });
+                }
+            }
             _ => {}
         }
 
@@ -205,6 +227,22 @@ mod tests {
                 TelemetryEvent::NodeStats { id: 42, peers: 3 },
                 TelemetryEvent::RemovedNode { id: 42 },
             ]
+        );
+    }
+
+    /// Payload shape captured from the live feed at telemetry.shielded.tools.
+    #[test]
+    fn parses_added_chain() {
+        let msg = r#"[11, ["Midnight Mainnet", "0x1941ca8e", 37], 11, ["", "", 0]]"#;
+        let events = parse_feed_message(msg);
+        assert_eq!(
+            events,
+            vec![TelemetryEvent::AddedChain {
+                label: "Midnight Mainnet".into(),
+                genesis: "0x1941ca8e".into(),
+                node_count: 37,
+            }],
+            "a chain with no genesis hash is unusable and must be skipped"
         );
     }
 

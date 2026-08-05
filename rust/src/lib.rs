@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 pub use health::{AlertEvent, Severity};
-pub use state::{NetworkSummary, NodeInfo, Snapshot};
+pub use state::{ChainOption, NetworkSummary, NodeInfo, Snapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum ConnectionStatus {
@@ -45,8 +45,8 @@ pub fn default_feed_url() -> String {
 }
 
 #[uniffi::export]
-pub fn default_network_id() -> String {
-    networks::DEFAULT_NETWORK_ID.to_string()
+pub fn default_genesis() -> String {
+    networks::DEFAULT_GENESIS.to_string()
 }
 
 #[uniffi::export]
@@ -65,16 +65,12 @@ pub struct TelemetryClient {
 #[uniffi::export]
 impl TelemetryClient {
     /// `feed_url` — pass `default_feed_url()` unless you have your own endpoint.
-    /// `network_id` — "mainnet", "preprod", or "preview" (see networks::NETWORKS);
-    /// falls back to mainnet if unrecognized.
+    /// `genesis` — the chain to subscribe to, taken from `Snapshot.chains` (or
+    /// `default_genesis()` before the feed has announced its chain list).
     /// `block_stall_secs` — how long without a new block before alerting; pass
     /// `default_block_stall_secs()` unless the user has set their own.
     #[uniffi::constructor]
-    pub fn new(feed_url: String, network_id: String, block_stall_secs: f64) -> Arc<Self> {
-        let genesis = networks::genesis_for(&network_id)
-            .or_else(|| networks::genesis_for(networks::DEFAULT_NETWORK_ID))
-            .expect("default network must have a genesis hash")
-            .to_string();
+    pub fn new(feed_url: String, genesis: String, block_stall_secs: f64) -> Arc<Self> {
         Arc::new(Self { feed_url, genesis, block_stall_secs, handle: Mutex::new(None) })
     }
 
