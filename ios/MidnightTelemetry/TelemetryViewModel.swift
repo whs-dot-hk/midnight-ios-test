@@ -1,145 +1,199 @@
 import Foundation
 
-/// `AlertEvent.id` is a stable condition key (e.g. "block-stall"), reused
-/// across an alert's fire/escalate/resolve lifecycle so NotificationManager
-/// can replace the right system notification. That makes it unsuitable as a
-/// SwiftUI list identity for `recentAlerts`, which keeps history: the same
-/// condition can appear more than once. Wrap each occurrence with its own id.
+/// `AlertEvent.id` is a stable condition key (e.g. "block-stall") reused across
+/// an alert's fire/resolve lifecycle so NotificationManager can replace the
+/// right system notification. Two things follow: it is unsuitable as a SwiftUI
+/// list identity for the `recentAlerts` history, since the same condition
+/// recurs; and it is only unique *within* one chain, so the chain it came from
+/// is carried alongside it.
 struct DisplayAlert: Identifiable {
     let id = UUID()
     let event: AlertEvent
+    let genesis: String
+    let networkLabel: String?
+}
+
+/// One monitored chain. The feed allows a single subscription per connection,
+/// so each chain gets its own client, and therefore its own state, stall clock
+/// and alerts.
+struct NetworkMonitor: Identifiable {
+    let genesis: String
+    /// Known only once the feed announces its chain list.
+    var label: String?
+    var status: ConnectionStatus = .connecting
+    var snapshot: Snapshot = Snapshot(nodes: [], summary: nil, chains: [])
+
+    var id: String { genesis }
 }
 
 @MainActor
 final class TelemetryViewModel: ObservableObject {
     private static let blockStallSecsDefaultsKey = "blockStallSecs"
-    private static let genesisDefaultsKey = "genesis"
-    private static let includeTestNetworksDefaultsKey = "includeTestNetworks"
+    private static let monitorAllNetworksDefaultsKey = "monitorAllNetworks"
 
-    @Published private(set) var status: ConnectionStatus = .connecting
-    @Published private(set) var snapshot: Snapshot = Snapshot(nodes: [], summary: nil, chains: [])
+    @Published private(set) var monitors: [NetworkMonitor] = []
     @Published private(set) var recentAlerts: [DisplayAlert] = []
+
     @Published var blockStallSecs: Double = TelemetryViewModel.storedBlockStallSecs() {
         didSet {
             guard blockStallSecs != oldValue else { return }
             UserDefaults.standard.set(blockStallSecs, forKey: Self.blockStallSecsDefaultsKey)
-            restart()
-        }
-    }
-    /// Genesis hash of the subscribed chain. The selectable set comes from the
-    /// feed itself via `snapshot.chains`, so nothing here is hardcoded.
-    @Published var genesis: String = TelemetryViewModel.storedGenesis() {
-        didSet {
-            guard genesis != oldValue else { return }
-            UserDefaults.standard.set(genesis, forKey: Self.genesisDefaultsKey)
-            restart()
+            restartAll()
         }
     }
 
-    /// Off by default, so only mainnet is offered and monitored. Turning it off
-    /// while a test network is selected returns the subscription to mainnet.
-    @Published var includeTestNetworks: Bool = UserDefaults.standard.bool(forKey: includeTestNetworksDefaultsKey) {
+    /// Off by default: mainnet only. On: every chain the feed carries is
+    /// monitored on its own connection, and any of them can raise an alert.
+    @Published var monitorAllNetworks: Bool =
+        UserDefaults.standard.bool(forKey: monitorAllNetworksDefaultsKey)
+    {
         didSet {
-            guard includeTestNetworks != oldValue else { return }
-            UserDefaults.standard.set(includeTestNetworks, forKey: Self.includeTestNetworksDefaultsKey)
-            if !includeTestNetworks {
-                genesis = defaultGenesis()
+            guard monitorAllNetworks != oldValue else { return }
+            UserDefaults.standard.set(monitorAllNetworks, forKey: Self.monitorAllNetworksDefaultsKey)
+            if monitorAllNetworks {
+                subscribeToKnownChains()
+            } else {
+                for genesis in Array(clients.keys) where genesis != defaultGenesis() {
+                    unsubscribe(genesis: genesis)
+                }
             }
         }
     }
 
-    private var client: TelemetryClient?
-    private var delegateBridge: DelegateBridge?
+    private var clients: [String: TelemetryClient] = [:]
+    private var bridges: [String: DelegateBridge] = [:]
+    /// Chains the feed has announced. Every connection announces the full set,
+    /// so one is enough to learn about the rest.
+    private var knownChains: [ChainOption] = []
+
     private let notifications = NotificationManager()
-
-    /// Label for the subscribed chain, once the feed has announced it.
-    var currentChainLabel: String? {
-        snapshot.chains.first { $0.genesis == genesis }?.label
-    }
-
-    /// Mainnet is identified by genesis hash rather than by its label, so a
-    /// change to the feed's naming cannot silently expose test networks.
-    var selectableChains: [ChainOption] {
-        guard includeTestNetworks else {
-            return snapshot.chains.filter { $0.genesis == defaultGenesis() }
-        }
-        return snapshot.chains
-    }
 
     private static func storedBlockStallSecs() -> Double {
         let stored = UserDefaults.standard.double(forKey: blockStallSecsDefaultsKey)
         return stored > 0 ? stored : defaultBlockStallSecs()
     }
 
-    /// A previously selected test network must not survive into a session with
-    /// test networks turned off, so the toggle decides before the stored value.
-    private static func storedGenesis() -> String {
-        guard UserDefaults.standard.bool(forKey: includeTestNetworksDefaultsKey) else {
-            return defaultGenesis()
-        }
-        return UserDefaults.standard.string(forKey: genesisDefaultsKey) ?? defaultGenesis()
-    }
-
     func start() {
-        guard client == nil else { return }
-        let client = TelemetryClient(feedUrl: defaultFeedUrl(), genesis: genesis, blockStallSecs: blockStallSecs)
-        let bridge = DelegateBridge(owner: self)
-        self.client = client
-        self.delegateBridge = bridge
-        client.start(delegate: bridge)
+        guard clients.isEmpty else { return }
+        // Mainnet always runs; the others join once the feed names them.
+        subscribe(genesis: defaultGenesis(), label: nil)
     }
 
     func stop() {
-        client?.stop()
-        client = nil
-        delegateBridge = nil
+        clients.values.forEach { $0.stop() }
+        clients.removeAll()
+        bridges.removeAll()
+        monitors.removeAll()
     }
 
-    private func restart() {
-        guard client != nil else { return }
+    // MARK: - Connections
+
+    private func subscribe(genesis: String, label: String?) {
+        guard clients[genesis] == nil else { return }
+        let client = TelemetryClient(
+            feedUrl: defaultFeedUrl(), genesis: genesis, blockStallSecs: blockStallSecs)
+        let bridge = DelegateBridge(owner: self, genesis: genesis)
+        clients[genesis] = client
+        bridges[genesis] = bridge
+        monitors.append(NetworkMonitor(genesis: genesis, label: label))
+        sortMonitors()
+        client.start(delegate: bridge)
+    }
+
+    private func unsubscribe(genesis: String) {
+        clients[genesis]?.stop()
+        clients[genesis] = nil
+        bridges[genesis] = nil
+        monitors.removeAll { $0.genesis == genesis }
+        // Alerts belong to the chain that raised them; keeping them after that
+        // chain is dropped would attribute them to nothing.
+        recentAlerts.removeAll { $0.genesis == genesis }
+    }
+
+    private func subscribeToKnownChains() {
+        guard monitorAllNetworks else { return }
+        for chain in knownChains where clients[chain.genesis] == nil {
+            subscribe(genesis: chain.genesis, label: chain.label)
+        }
+    }
+
+    private func restartAll() {
+        let existing = monitors.map { ($0.genesis, $0.label) }
+        guard !existing.isEmpty else { return }
         stop()
-        status = .connecting
-        // Drop the previous chain's nodes and alerts so they aren't shown under
-        // the newly selected network, but keep the feed's chain list — that is
-        // feed-level, not subscription-specific, so the picker never goes empty.
-        snapshot = Snapshot(nodes: [], summary: nil, chains: snapshot.chains)
         recentAlerts = []
-        start()
+        for (genesis, label) in existing {
+            subscribe(genesis: genesis, label: label)
+        }
     }
 
-    fileprivate func handleSnapshot(_ snapshot: Snapshot) {
-        self.snapshot = snapshot
+    /// Mainnet first, then alphabetical, so the order stays put as counts move.
+    private func sortMonitors() {
+        let mainnet = defaultGenesis()
+        monitors.sort {
+            if ($0.genesis == mainnet) != ($1.genesis == mainnet) {
+                return $0.genesis == mainnet
+            }
+            return ($0.label ?? $0.genesis) < ($1.label ?? $1.genesis)
+        }
     }
 
-    fileprivate func handleAlert(_ alert: AlertEvent) {
-        recentAlerts.insert(DisplayAlert(event: alert), at: 0)
+    // MARK: - Delegate callbacks
+
+    fileprivate func handleSnapshot(_ snapshot: Snapshot, genesis: String) {
+        if !snapshot.chains.isEmpty {
+            knownChains = snapshot.chains
+            for i in monitors.indices where monitors[i].label == nil {
+                monitors[i].label = snapshot.chains
+                    .first { $0.genesis == monitors[i].genesis }?.label
+            }
+            sortMonitors()
+            subscribeToKnownChains()
+        }
+        if let i = monitors.firstIndex(where: { $0.genesis == genesis }) {
+            monitors[i].snapshot = snapshot
+        }
+    }
+
+    fileprivate func handleAlert(_ alert: AlertEvent, genesis: String) {
+        let label = monitors.first { $0.genesis == genesis }?.label
+        recentAlerts.insert(
+            DisplayAlert(event: alert, genesis: genesis, networkLabel: label), at: 0)
         recentAlerts = Array(recentAlerts.prefix(20))
-        notifications.post(alert: alert)
+        notifications.post(alert: alert, genesis: genesis, networkLabel: label)
     }
 
-    fileprivate func handleStatusChanged(_ status: ConnectionStatus) {
-        self.status = status
+    fileprivate func handleStatusChanged(_ status: ConnectionStatus, genesis: String) {
+        if let i = monitors.firstIndex(where: { $0.genesis == genesis }) {
+            monitors[i].status = status
+        }
     }
 }
 
-/// Rust calls these from its own background telemetry thread; each callback
-/// hops to the main actor before touching view-model state.
+/// Rust calls these from each connection's own background telemetry thread;
+/// every callback hops to the main actor before touching view-model state, and
+/// carries the genesis hash identifying which chain it came from.
 private final class DelegateBridge: TelemetryDelegate {
     private weak var owner: TelemetryViewModel?
+    private let genesis: String
 
-    init(owner: TelemetryViewModel) {
+    init(owner: TelemetryViewModel, genesis: String) {
         self.owner = owner
+        self.genesis = genesis
     }
 
     func onSnapshot(snapshot: Snapshot) {
-        Task { @MainActor in owner?.handleSnapshot(snapshot) }
+        let genesis = self.genesis
+        Task { @MainActor [weak owner] in owner?.handleSnapshot(snapshot, genesis: genesis) }
     }
 
     func onAlert(alert: AlertEvent) {
-        Task { @MainActor in owner?.handleAlert(alert) }
+        let genesis = self.genesis
+        Task { @MainActor [weak owner] in owner?.handleAlert(alert, genesis: genesis) }
     }
 
     func onStatusChanged(status: ConnectionStatus) {
-        Task { @MainActor in owner?.handleStatusChanged(status) }
+        let genesis = self.genesis
+        Task { @MainActor [weak owner] in owner?.handleStatusChanged(status, genesis: genesis) }
     }
 }

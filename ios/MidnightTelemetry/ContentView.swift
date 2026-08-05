@@ -5,8 +5,8 @@ struct ContentView: View {
 
     var body: some View {
         TabView {
-            NodesView(viewModel: viewModel)
-                .tabItem { Label("Nodes", systemImage: "server.rack") }
+            NetworksView(viewModel: viewModel)
+                .tabItem { Label("Networks", systemImage: "server.rack") }
 
             SettingsView(viewModel: viewModel)
                 .tabItem { Label("Settings", systemImage: "gear") }
@@ -15,35 +15,38 @@ struct ContentView: View {
     }
 }
 
-struct NodesView: View {
+struct NetworksView: View {
     @ObservedObject var viewModel: TelemetryViewModel
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    HStack {
-                        Circle()
-                            .fill(statusColor)
-                            .frame(width: 10, height: 10)
-                        Text(statusLabel)
-                            .font(.subheadline)
-                    }
-                    if let summary = viewModel.snapshot.summary {
-                        LabeledContent("Best block", value: "#\(summary.bestBlock)")
-                        LabeledContent("Finalized", value: "#\(summary.finalizedBlock)")
-                        LabeledContent("Last block", value: String(format: "%.0fs ago", summary.secondsSinceLastBlock))
-                    }
-                }
-
-                Section("Validators (\(viewModel.snapshot.nodes.count))") {
-                    ForEach(viewModel.snapshot.nodes, id: \.id) { node in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(node.name.isEmpty ? "unnamed" : node.name)
-                            Text("\(node.peers) peers · block #\(node.bestBlock)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                ForEach(viewModel.monitors) { monitor in
+                    Section {
+                        HStack {
+                            Circle()
+                                .fill(color(for: monitor.status))
+                                .frame(width: 10, height: 10)
+                            Text(label(for: monitor.status))
+                                .font(.subheadline)
                         }
+                        if let summary = monitor.snapshot.summary {
+                            LabeledContent("Best block", value: "#\(summary.bestBlock)")
+                            LabeledContent("Finalized", value: "#\(summary.finalizedBlock)")
+                            LabeledContent(
+                                "Last block",
+                                value: String(format: "%.0fs ago", summary.secondsSinceLastBlock))
+                        }
+                        ForEach(monitor.snapshot.nodes, id: \.id) { node in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(node.name.isEmpty ? "unnamed" : node.name)
+                                Text("\(node.peers) peers · block #\(node.bestBlock)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } header: {
+                        Text("\(monitor.label ?? "Midnight") · \(monitor.snapshot.nodes.count) validators")
                     }
                 }
 
@@ -51,7 +54,7 @@ struct NodesView: View {
                     Section("Recent alerts") {
                         ForEach(viewModel.recentAlerts) { alert in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(alert.event.title)
+                                Text(title(for: alert))
                                 Text(alert.event.body)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -60,20 +63,26 @@ struct NodesView: View {
                     }
                 }
             }
-            .navigationTitle(viewModel.currentChainLabel ?? "Midnight Telemetry")
+            .navigationTitle("Midnight Telemetry")
         }
     }
 
-    private var statusLabel: String {
-        switch viewModel.status {
+    /// The history spans every monitored chain, so each entry names its own.
+    private func title(for alert: DisplayAlert) -> String {
+        guard let network = alert.networkLabel else { return alert.event.title }
+        return "\(network): \(alert.event.title)"
+    }
+
+    private func label(for status: ConnectionStatus) -> String {
+        switch status {
         case .connecting: return "Connecting…"
         case .live: return "Live"
         case .reconnecting: return "Reconnecting…"
         }
     }
 
-    private var statusColor: Color {
-        switch viewModel.status {
+    private func color(for status: ConnectionStatus) -> Color {
+        switch status {
         case .connecting: return .yellow
         case .live: return .green
         case .reconnecting: return .orange
@@ -88,29 +97,13 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 Section {
-                    Toggle("Include test networks", isOn: $viewModel.includeTestNetworks)
-
-                    if viewModel.includeTestNetworks {
-                        if viewModel.selectableChains.isEmpty {
-                            // Announced by the feed on connect, so briefly
-                            // unavailable before the first message arrives.
-                            LabeledContent("Network", value: "Waiting for feed…")
-                        } else {
-                            Picker("Network", selection: $viewModel.genesis) {
-                                ForEach(viewModel.selectableChains, id: \.genesis) { chain in
-                                    Text("\(chain.label) (\(chain.nodeCount))")
-                                        .tag(chain.genesis)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                        }
-                    }
+                    Toggle("Monitor all networks", isOn: $viewModel.monitorAllNetworks)
                 } header: {
-                    Text("Network")
+                    Text("Networks")
                 } footer: {
-                    Text(viewModel.includeTestNetworks
-                         ? "Chains and node counts are reported by the telemetry feed."
-                         : "Only mainnet is monitored. Turn this on to select preprod or preview.")
+                    Text(viewModel.monitorAllNetworks
+                         ? "Every chain the feed carries is monitored on its own connection, and any of them can raise an alert."
+                         : "Only mainnet is monitored.")
                 }
 
                 Section {
@@ -134,8 +127,9 @@ struct SettingsView: View {
     /// normal jitter rather than on real stalls — show the live average so the
     /// value can be picked against what the chain is actually doing.
     private var thresholdFooter: String {
-        let base = "Alert when no new block has arrived for this long."
-        guard let avgMs = viewModel.snapshot.summary?.avgBlockTimeMs else { return base }
+        let base = "Alert when no new block has arrived for this long, on any monitored network."
+        let averages = viewModel.monitors.compactMap { $0.snapshot.summary?.avgBlockTimeMs }
+        guard let avgMs = averages.first else { return base }
         return base + String(format: " Current average block time is %.1fs.", Double(avgMs) / 1000)
     }
 }

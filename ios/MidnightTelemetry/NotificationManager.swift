@@ -6,13 +6,18 @@ final class NotificationManager {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    func post(alert: AlertEvent) {
+    func post(alert: AlertEvent, genesis: String, networkLabel: String?) {
         let content = UNMutableNotificationContent()
-        content.title = alert.title
+        content.title = networkLabel.map { "\($0): \(alert.title)" } ?? alert.title
         content.body = alert.body
         content.sound = .default
 
-        let request = UNNotificationRequest(identifier: alert.id, content: content, trigger: nil)
+        // alert.id names a condition within one chain ("block-stall"), so every
+        // monitored network produces the same ids. Namespacing by genesis keeps
+        // one network's notification from replacing another's, while still
+        // letting a chain's own re-notification replace its previous one.
+        let request = UNNotificationRequest(
+            identifier: "\(genesis)/\(alert.id)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
 }
