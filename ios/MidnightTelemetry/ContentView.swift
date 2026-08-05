@@ -126,13 +126,15 @@ private struct ValidatorRow: View {
                     .font(.callout)
                 Text(node.peers == 1 ? "1 peer" : "\(node.peers) peers")
                     .font(.caption)
-                    .foregroundStyle(node.peers == 0 ? .red : .secondary)
+                    .foregroundStyle(node.peers == 0 ? Color.red : Color.secondary)
             }
             Spacer(minLength: 0)
             VStack(alignment: .trailing, spacing: 2) {
                 Text("#\(node.bestBlock)")
                     .font(.callout.monospacedDigit())
-                    .foregroundStyle(blocksBehind == nil ? .primary : .orange)
+                    // Both branches spelled as Color: bare `.primary` resolves to
+                    // HierarchicalShapeStyle, which has no `.orange` to match.
+                    .foregroundStyle(blocksBehind == nil ? Color.primary : Color.orange)
                 if let behind = blocksBehind {
                     Text("\(behind) behind")
                         .font(.caption)

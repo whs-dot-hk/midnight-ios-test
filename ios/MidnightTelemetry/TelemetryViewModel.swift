@@ -191,17 +191,20 @@ private final class DelegateBridge: TelemetryDelegate {
     }
 
     func onSnapshot(snapshot: Snapshot) {
+        let owner = self.owner
         let genesis = self.genesis
-        Task { @MainActor [weak owner] in owner?.handleSnapshot(snapshot, genesis: genesis) }
+        Task { @MainActor in owner?.handleSnapshot(snapshot, genesis: genesis) }
     }
 
     func onAlert(alert: AlertEvent) {
+        let owner = self.owner
         let genesis = self.genesis
-        Task { @MainActor [weak owner] in owner?.handleAlert(alert, genesis: genesis) }
+        Task { @MainActor in owner?.handleAlert(alert, genesis: genesis) }
     }
 
     func onStatusChanged(status: ConnectionStatus) {
+        let owner = self.owner
         let genesis = self.genesis
-        Task { @MainActor [weak owner] in owner?.handleStatusChanged(status, genesis: genesis) }
+        Task { @MainActor in owner?.handleStatusChanged(status, genesis: genesis) }
     }
 }
