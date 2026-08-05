@@ -1,0 +1,32 @@
+[package]
+name = "midnight_telemetry_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "midnight_telemetry_core"
+crate-type = ["staticlib", "lib"]
+
+# Self-hosting bindgen binary — see scripts/build-ios.sh. Gated behind its own
+# feature so a plain `cargo build`/`cargo test` doesn't try to compile it
+# (uniffi_bindgen_main only exists when uniffi's "cli" feature is enabled).
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+required-features = ["uniffi-bindgen"]
+
+[features]
+uniffi-bindgen = ["uniffi/cli"]
+
+[dependencies]
+uniffi = "0.32"
+tokio = { version = "1", default-features = false, features = ["rt", "time", "macros"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+lto = true
+strip = true
