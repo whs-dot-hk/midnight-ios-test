@@ -19,8 +19,21 @@ pub struct ClientHandle {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// rustls 0.23 requires a process-wide CryptoProvider to be installed before
+/// any TLS connection; nothing does this implicitly for tokio-tungstenite's
+/// rustls-tls-webpki-roots feature, so without this every connect attempt
+/// panics the telemetry thread instead of erroring.
+static INSTALL_CRYPTO_PROVIDER: std::sync::Once = std::sync::Once::new();
+
+fn ensure_crypto_provider() {
+    INSTALL_CRYPTO_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 impl ClientHandle {
     pub fn start(feed_url: String, genesis: String, delegate: Arc<dyn TelemetryDelegate>) -> Self {
+        ensure_crypto_provider();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
         let thread = std::thread::Builder::new()
