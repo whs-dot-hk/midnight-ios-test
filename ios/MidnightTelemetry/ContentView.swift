@@ -4,6 +4,21 @@ struct ContentView: View {
     @ObservedObject var viewModel: TelemetryViewModel
 
     var body: some View {
+        TabView {
+            NodesView(viewModel: viewModel)
+                .tabItem { Label("Nodes", systemImage: "server.rack") }
+
+            SettingsView(viewModel: viewModel)
+                .tabItem { Label("Settings", systemImage: "gear") }
+        }
+        .task { viewModel.start() }
+    }
+}
+
+struct NodesView: View {
+    @ObservedObject var viewModel: TelemetryViewModel
+
+    var body: some View {
         NavigationStack {
             List {
                 Section {
@@ -54,7 +69,6 @@ struct ContentView: View {
             }
             .navigationTitle("Midnight Telemetry")
         }
-        .task { viewModel.start() }
     }
 
     private var statusLabel: String {
@@ -71,6 +85,39 @@ struct ContentView: View {
         case .live: return .green
         case .reconnecting: return .orange
         }
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var viewModel: TelemetryViewModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Stepper(value: $viewModel.blockStallSecs, in: 7...120, step: 1) {
+                        LabeledContent(
+                            "Stall threshold",
+                            value: String(format: "%.0fs", viewModel.blockStallSecs)
+                        )
+                    }
+                } header: {
+                    Text("Block production")
+                } footer: {
+                    Text(thresholdFooter)
+                }
+            }
+            .navigationTitle("Settings")
+        }
+    }
+
+    /// Midnight blocks land ~every 6s, so a threshold close to that fires on
+    /// normal jitter rather than on real stalls — show the live average so the
+    /// value can be picked against what the chain is actually doing.
+    private var thresholdFooter: String {
+        let base = "Alert when no new block has arrived for this long."
+        guard let avgMs = viewModel.snapshot.summary?.avgBlockTimeMs else { return base }
+        return base + String(format: " Current average block time is %.1fs.", Double(avgMs) / 1000)
     }
 }
 

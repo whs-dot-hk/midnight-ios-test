@@ -32,26 +32,20 @@ pub enum TelemetryEvent {
     ImportedBlock {
         id: u64,
         block_number: u64,
-        block_hash: String,
     },
     FinalizedBlock {
-        id: u64,
         block_number: u64,
-        block_hash: String,
     },
     NodeStats {
         id: u64,
         peers: u32,
-        tx_count: u32,
     },
     BestBlock {
         block_number: u64,
-        timestamp: u64,
         avg_block_time_ms: Option<u64>,
     },
     BestFinalized {
         block_number: u64,
-        block_hash: String,
     },
 }
 
@@ -60,9 +54,6 @@ fn arr(v: &Value) -> Option<&Vec<Value>> {
 }
 fn u64_at(a: &[Value], i: usize) -> Option<u64> {
     a.get(i).and_then(Value::as_u64)
-}
-fn str_at(a: &[Value], i: usize) -> String {
-    a.get(i).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
 pub fn parse_feed_message(raw: &str) -> Vec<TelemetryEvent> {
@@ -125,19 +116,14 @@ pub fn parse_feed_message(raw: &str) -> Vec<TelemetryEvent> {
                     events.push(TelemetryEvent::ImportedBlock {
                         id,
                         block_number: u64_at(block, 0).unwrap_or(0),
-                        block_hash: str_at(block, 1),
                     });
                 }
             }
             action::FINALIZED_BLOCK => {
                 // payload: [id, blockNumber, blockHash]
-                if let Some(id) = u64_at(payload, 0) {
-                    events.push(TelemetryEvent::FinalizedBlock {
-                        id,
-                        block_number: u64_at(payload, 1).unwrap_or(0),
-                        block_hash: str_at(payload, 2),
-                    });
-                }
+                events.push(TelemetryEvent::FinalizedBlock {
+                    block_number: u64_at(payload, 1).unwrap_or(0),
+                });
             }
             action::NODE_STATS => {
                 // payload: [id, [peers, txCount]]
@@ -145,7 +131,6 @@ pub fn parse_feed_message(raw: &str) -> Vec<TelemetryEvent> {
                     events.push(TelemetryEvent::NodeStats {
                         id,
                         peers: u64_at(stats, 0).unwrap_or(0) as u32,
-                        tx_count: u64_at(stats, 1).unwrap_or(0) as u32,
                     });
                 }
             }
@@ -153,7 +138,6 @@ pub fn parse_feed_message(raw: &str) -> Vec<TelemetryEvent> {
                 // payload: [blockNumber, timestamp, maybeAvgMs]
                 events.push(TelemetryEvent::BestBlock {
                     block_number: u64_at(payload, 0).unwrap_or(0),
-                    timestamp: u64_at(payload, 1).unwrap_or(0),
                     avg_block_time_ms: u64_at(payload, 2),
                 });
             }
@@ -161,7 +145,6 @@ pub fn parse_feed_message(raw: &str) -> Vec<TelemetryEvent> {
                 // payload: [blockNumber, blockHash]
                 events.push(TelemetryEvent::BestFinalized {
                     block_number: u64_at(payload, 0).unwrap_or(0),
-                    block_hash: str_at(payload, 1),
                 });
             }
             _ => {}
@@ -206,16 +189,8 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                TelemetryEvent::ImportedBlock {
-                    id: 42,
-                    block_number: 12346,
-                    block_hash: "0xdef".into(),
-                },
-                TelemetryEvent::BestBlock {
-                    block_number: 12346,
-                    timestamp: 1710000000,
-                    avg_block_time_ms: Some(6200),
-                },
+                TelemetryEvent::ImportedBlock { id: 42, block_number: 12346 },
+                TelemetryEvent::BestBlock { block_number: 12346, avg_block_time_ms: Some(6200) },
             ]
         );
     }
@@ -227,7 +202,7 @@ mod tests {
         assert_eq!(
             events,
             vec![
-                TelemetryEvent::NodeStats { id: 42, peers: 3, tx_count: 0 },
+                TelemetryEvent::NodeStats { id: 42, peers: 3 },
                 TelemetryEvent::RemovedNode { id: 42 },
             ]
         );
@@ -239,11 +214,7 @@ mod tests {
         let events = parse_feed_message(msg);
         assert_eq!(
             events,
-            vec![TelemetryEvent::BestBlock {
-                block_number: 10,
-                timestamp: 1710000000,
-                avg_block_time_ms: None,
-            }]
+            vec![TelemetryEvent::BestBlock { block_number: 10, avg_block_time_ms: None }]
         );
     }
 }

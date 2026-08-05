@@ -16,8 +16,6 @@ pub struct NodeInfo {
     pub is_validator: bool,
     pub peers: u32,
     pub best_block: u64,
-    pub finalized_block: u64,
-    pub seconds_since_update: f64,
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -74,8 +72,6 @@ struct NodeEntry {
     kind: NodeKind,
     peers: u32,
     best_block: u64,
-    finalized_block: u64,
-    last_update: Instant,
     peer_history: PeerHistory,
 }
 
@@ -105,15 +101,8 @@ impl TelemetryState {
         match event {
             TelemetryEvent::AddedNode { id, name, peers, best_block } => {
                 let kind = classify_node(&name);
-                let mut entry = NodeEntry {
-                    name,
-                    kind,
-                    peers,
-                    best_block,
-                    finalized_block: 0,
-                    last_update: now,
-                    peer_history: PeerHistory::new(),
-                };
+                let mut entry =
+                    NodeEntry { name, kind, peers, best_block, peer_history: PeerHistory::new() };
                 entry.peer_history.push(now, peers);
                 if best_block > self.best_block {
                     self.best_block = best_block;
@@ -124,40 +113,34 @@ impl TelemetryState {
             TelemetryEvent::RemovedNode { id } => {
                 self.nodes.remove(&id);
             }
-            TelemetryEvent::ImportedBlock { id, block_number, .. } => {
+            TelemetryEvent::ImportedBlock { id, block_number } => {
                 if let Some(n) = self.nodes.get_mut(&id) {
                     n.best_block = block_number;
-                    n.last_update = now;
                 }
                 if block_number > self.best_block {
                     self.best_block = block_number;
                     self.last_block_seen_at = now;
                 }
             }
-            TelemetryEvent::FinalizedBlock { id, block_number, .. } => {
-                if let Some(n) = self.nodes.get_mut(&id) {
-                    n.finalized_block = block_number;
-                    n.last_update = now;
-                }
+            TelemetryEvent::FinalizedBlock { block_number } => {
                 if block_number > self.finalized_block {
                     self.finalized_block = block_number;
                 }
             }
-            TelemetryEvent::NodeStats { id, peers, .. } => {
+            TelemetryEvent::NodeStats { id, peers } => {
                 if let Some(n) = self.nodes.get_mut(&id) {
                     n.peers = peers;
-                    n.last_update = now;
                     n.peer_history.push(now, peers);
                 }
             }
-            TelemetryEvent::BestBlock { block_number, avg_block_time_ms, .. } => {
+            TelemetryEvent::BestBlock { block_number, avg_block_time_ms } => {
                 self.avg_block_time_ms = avg_block_time_ms;
                 if block_number > self.best_block {
                     self.best_block = block_number;
                     self.last_block_seen_at = now;
                 }
             }
-            TelemetryEvent::BestFinalized { block_number, .. } => {
+            TelemetryEvent::BestFinalized { block_number } => {
                 if block_number > self.finalized_block {
                     self.finalized_block = block_number;
                 }
@@ -176,8 +159,6 @@ impl TelemetryState {
                 is_validator: n.kind == NodeKind::Validator,
                 peers: n.peers,
                 best_block: n.best_block,
-                finalized_block: n.finalized_block,
-                seconds_since_update: now.duration_since(n.last_update).as_secs_f64(),
             })
             .collect();
 
@@ -208,8 +189,7 @@ impl TelemetryState {
         now.duration_since(self.last_block_seen_at).as_secs_f64()
     }
 
-    pub fn peer_drop_candidates(&self, now: Instant) -> Vec<PeerDrop> {
-        let _ = now; // baseline is precomputed on push; kept for a stable call-site shape
+    pub fn peer_drop_candidates(&self) -> Vec<PeerDrop> {
         self.nodes
             .iter()
             .filter_map(|(&id, n)| {

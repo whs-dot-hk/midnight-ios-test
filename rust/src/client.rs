@@ -1,6 +1,6 @@
 //! WebSocket lifecycle: connect to the telemetry feed, subscribe to a chain
 //! by genesis hash, reconnect with backoff on drop, and drive a 1s ticker so
-//! "no block seen in >6s" can be detected even when the feed goes silent.
+//! a block stall can be detected even when the feed goes silent.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -32,7 +32,12 @@ fn ensure_crypto_provider() {
 }
 
 impl ClientHandle {
-    pub fn start(feed_url: String, genesis: String, delegate: Arc<dyn TelemetryDelegate>) -> Self {
+    pub fn start(
+        feed_url: String,
+        genesis: String,
+        block_stall_secs: f64,
+        delegate: Arc<dyn TelemetryDelegate>,
+    ) -> Self {
         ensure_crypto_provider();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_thread = stop.clone();
@@ -43,7 +48,7 @@ impl ClientHandle {
                     .enable_all()
                     .build()
                     .expect("failed to start telemetry runtime");
-                rt.block_on(run_loop(feed_url, genesis, delegate, stop_for_thread));
+                rt.block_on(run_loop(feed_url, genesis, block_stall_secs, delegate, stop_for_thread));
             })
             .expect("failed to spawn telemetry thread");
 
@@ -67,13 +72,15 @@ impl Drop for ClientHandle {
 async fn run_loop(
     feed_url: String,
     genesis: String,
+    block_stall_secs: f64,
     delegate: Arc<dyn TelemetryDelegate>,
     stop: Arc<AtomicBool>,
 ) {
     let mut retry: u32 = 0;
     while !stop.load(Ordering::SeqCst) {
         delegate.on_status_changed(ConnectionStatus::Connecting);
-        let connected_ok = connect_and_run(&feed_url, &genesis, &delegate, &stop).await;
+        let connected_ok =
+            connect_and_run(&feed_url, &genesis, block_stall_secs, &delegate, &stop).await;
         if stop.load(Ordering::SeqCst) {
             break;
         }
@@ -93,6 +100,7 @@ async fn run_loop(
 async fn connect_and_run(
     feed_url: &str,
     genesis: &str,
+    block_stall_secs: f64,
     delegate: &Arc<dyn TelemetryDelegate>,
     stop: &Arc<AtomicBool>,
 ) -> bool {
@@ -107,7 +115,7 @@ async fn connect_and_run(
     delegate.on_status_changed(ConnectionStatus::Live);
 
     let mut state = TelemetryState::new(Instant::now());
-    let mut engine = NotifyEngine::new();
+    let mut engine = NotifyEngine::new(block_stall_secs);
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
 
     loop {
@@ -161,7 +169,7 @@ fn emit_alerts(
     now: Instant,
 ) {
     let seconds_since_last_block = state.seconds_since_last_block(now);
-    let peer_drops = state.peer_drop_candidates(now);
+    let peer_drops = state.peer_drop_candidates();
     for alert in engine.evaluate(seconds_since_last_block, &peer_drops, now) {
         delegate.on_alert(alert);
     }

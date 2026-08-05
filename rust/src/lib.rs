@@ -30,12 +30,6 @@ pub enum ConnectionStatus {
     Reconnecting,
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct NetworkOption {
-    pub id: String,
-    pub label: String,
-}
-
 /// Implemented in Swift, called from Rust's background telemetry thread.
 /// Swift implementations must hop to the main thread before touching UI state.
 #[uniffi::export(with_foreign)]
@@ -56,32 +50,32 @@ pub fn default_network_id() -> String {
 }
 
 #[uniffi::export]
-pub fn available_networks() -> Vec<NetworkOption> {
-    networks::NETWORKS
-        .iter()
-        .map(|n| NetworkOption { id: n.id.to_string(), label: n.label.to_string() })
-        .collect()
+pub fn default_block_stall_secs() -> f64 {
+    health::DEFAULT_BLOCK_STALL_SECS
 }
 
 #[derive(uniffi::Object)]
 pub struct TelemetryClient {
     feed_url: String,
     genesis: String,
+    block_stall_secs: f64,
     handle: Mutex<Option<client::ClientHandle>>,
 }
 
 #[uniffi::export]
 impl TelemetryClient {
     /// `feed_url` — pass `default_feed_url()` unless you have your own endpoint.
-    /// `network_id` — one of the ids returned by `available_networks()`; falls
-    /// back to mainnet if unrecognized.
+    /// `network_id` — "mainnet", "preprod", or "preview" (see networks::NETWORKS);
+    /// falls back to mainnet if unrecognized.
+    /// `block_stall_secs` — how long without a new block before alerting; pass
+    /// `default_block_stall_secs()` unless the user has set their own.
     #[uniffi::constructor]
-    pub fn new(feed_url: String, network_id: String) -> Arc<Self> {
+    pub fn new(feed_url: String, network_id: String, block_stall_secs: f64) -> Arc<Self> {
         let genesis = networks::genesis_for(&network_id)
             .or_else(|| networks::genesis_for(networks::DEFAULT_NETWORK_ID))
             .expect("default network must have a genesis hash")
             .to_string();
-        Arc::new(Self { feed_url, genesis, handle: Mutex::new(None) })
+        Arc::new(Self { feed_url, genesis, block_stall_secs, handle: Mutex::new(None) })
     }
 
     /// Starts (or is a no-op if already running) the background telemetry
@@ -91,7 +85,12 @@ impl TelemetryClient {
         if guard.is_some() {
             return;
         }
-        *guard = Some(client::ClientHandle::start(self.feed_url.clone(), self.genesis.clone(), delegate));
+        *guard = Some(client::ClientHandle::start(
+            self.feed_url.clone(),
+            self.genesis.clone(),
+            self.block_stall_secs,
+            delegate,
+        ));
     }
 
     pub fn stop(&self) {

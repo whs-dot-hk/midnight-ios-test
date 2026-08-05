@@ -23,36 +23,28 @@ pub struct AlertEvent {
     pub resolved: bool,
 }
 
-/// User-facing thresholds for this app: last block > 6s, and a validator's
-/// peer count halving (see state::peer_drop_candidates) within ~90s.
-pub const BLOCK_STALL_WARN_SECS: f64 = 6.0;
-pub const BLOCK_STALL_CRITICAL_SECS: f64 = 20.0;
+/// Default for the user-configurable block-stall threshold. Midnight's actual
+/// block time averages ~6s, so this needs real headroom above that average —
+/// otherwise normal per-block jitter crosses a too-tight threshold on its own
+/// and every other block fires a false alarm.
+pub const DEFAULT_BLOCK_STALL_SECS: f64 = 15.0;
 const RENOTIFY_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
 fn build_active_alerts(
     seconds_since_last_block: f64,
     peer_drops: &[PeerDrop],
+    block_stall_secs: f64,
 ) -> Vec<(String, Severity, String, String)> {
     let mut alerts = Vec::new();
 
-    if seconds_since_last_block > BLOCK_STALL_CRITICAL_SECS {
+    if seconds_since_last_block > block_stall_secs {
         alerts.push((
             "block-stall".to_string(),
             Severity::Critical,
             "Block production stalled".to_string(),
             format!(
-                "No new block in {:.0}s (critical threshold {:.0}s)",
-                seconds_since_last_block, BLOCK_STALL_CRITICAL_SECS
-            ),
-        ));
-    } else if seconds_since_last_block > BLOCK_STALL_WARN_SECS {
-        alerts.push((
-            "block-stall".to_string(),
-            Severity::Warning,
-            "Block time elevated".to_string(),
-            format!(
-                "No new block in {:.1}s (>{:.0}s)",
-                seconds_since_last_block, BLOCK_STALL_WARN_SECS
+                "No new block in {:.0}s (threshold {:.0}s)",
+                seconds_since_last_block, block_stall_secs
             ),
         ));
     }
@@ -78,12 +70,13 @@ struct SentAlert {
 }
 
 pub struct NotifyEngine {
+    block_stall_secs: f64,
     sent: HashMap<String, SentAlert>,
 }
 
 impl NotifyEngine {
-    pub fn new() -> Self {
-        Self { sent: HashMap::new() }
+    pub fn new(block_stall_secs: f64) -> Self {
+        Self { block_stall_secs, sent: HashMap::new() }
     }
 
     /// Evaluate current conditions against what was already sent, returning
@@ -95,7 +88,7 @@ impl NotifyEngine {
         peer_drops: &[PeerDrop],
         now: Instant,
     ) -> Vec<AlertEvent> {
-        let active = build_active_alerts(seconds_since_last_block, peer_drops);
+        let active = build_active_alerts(seconds_since_last_block, peer_drops, self.block_stall_secs);
         let mut out = Vec::new();
         let mut next: HashMap<String, SentAlert> = HashMap::new();
 
@@ -144,26 +137,22 @@ mod tests {
 
     #[test]
     fn fires_once_then_stays_quiet_while_stable() {
-        let mut engine = NotifyEngine::new();
+        let mut engine = NotifyEngine::new(15.0);
         let t0 = Instant::now();
-        let first = engine.evaluate(7.0, &[], t0);
+        let first = engine.evaluate(16.0, &[], t0);
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].severity, Severity::Warning);
+        assert_eq!(first[0].severity, Severity::Critical);
         assert!(!first[0].resolved);
 
-        let second = engine.evaluate(7.5, &[], t0);
-        assert!(second.is_empty(), "should not re-notify an unchanged warning");
+        let second = engine.evaluate(16.5, &[], t0);
+        assert!(second.is_empty(), "should not re-notify an unchanged stall");
     }
 
     #[test]
-    fn escalates_and_resolves() {
-        let mut engine = NotifyEngine::new();
+    fn fires_then_resolves() {
+        let mut engine = NotifyEngine::new(15.0);
         let t0 = Instant::now();
-        engine.evaluate(7.0, &[], t0); // warning
-
-        let escalated = engine.evaluate(25.0, &[], t0);
-        assert_eq!(escalated.len(), 1);
-        assert_eq!(escalated[0].severity, Severity::Critical);
+        engine.evaluate(16.0, &[], t0);
 
         let resolved = engine.evaluate(1.0, &[], t0);
         assert_eq!(resolved.len(), 1);
@@ -172,7 +161,7 @@ mod tests {
 
     #[test]
     fn peer_drop_to_zero_is_critical() {
-        let mut engine = NotifyEngine::new();
+        let mut engine = NotifyEngine::new(15.0);
         let t0 = Instant::now();
         let drops = vec![(1u64, "my-validator".to_string(), 8u32, 0u32)];
         let alerts = engine.evaluate(0.0, &drops, t0);
